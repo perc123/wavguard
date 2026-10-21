@@ -31,6 +31,7 @@ def loc(ref):
 # name: (file, fmt (header, payload, size), data (header, payload, size), findings, limit_hit)
 CASES = {
     "plain": (wav(), FMT_AT_12, DATA_AT_36, [], False),
+    # Even-sized LIST followed by "fmt ": would look like a missing pad if even chunks were checked.
     "list_before_fmt": (wav([LIST, FMT, DATA]), (24, 32, 16), (48, 56, 60), [], False),
     "fmt_after_data": (wav([DATA, FMT]), (80, 88, 16), (12, 20, 60), [], False),
     "odd_chunk_with_pad": (wav([ODD, FMT, DATA]), (24, 32, 16), (48, 56, 60), [], False),
@@ -69,6 +70,7 @@ CASES = {
         [("ODD_CHUNK_PAD_MISSING", 23)],
         False,
     ),
+    "odd_chunk_pad_is_last_byte": (wav([FMT, DATA, ODD]), FMT_AT_12, DATA_AT_36, [], False),
     "odd_chunk_at_eof_no_pad": (
         wav([FMT, DATA, ODD_NO_PAD]),
         FMT_AT_12,

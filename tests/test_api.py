@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from builders import wav
+from builders import chunk, fmt_payload, frames, wav
 from wavguard import Code, Finding, Report, validate
 from wavguard.model import Severity
 
@@ -51,6 +51,26 @@ def test_warning_only_report_is_ok_unless_strict():
     findings = (Finding(Code.TRAILING_BYTES, "trailing bytes", 104),)
     assert Report(findings).ok
     assert not Report(findings, strict=True).ok
+
+
+def case_u() -> bytes:
+    return wav(
+        [
+            chunk(b"fmt ", fmt_payload(channels=1)),
+            chunk(b"data", frames(11, 3), pad=False),
+            chunk(b"LIST", b"INFO"),
+        ]
+    )
+
+
+def test_missing_pad_is_ok_when_not_strict():
+    report = validate(io.BytesIO(case_u()))
+    assert [f.code for f in report.warnings] == ["ODD_CHUNK_PAD_MISSING"]
+    assert report.ok
+
+
+def test_missing_pad_fails_strict():
+    assert not validate(io.BytesIO(case_u()), strict=True).ok
 
 
 def test_finding_is_frozen():

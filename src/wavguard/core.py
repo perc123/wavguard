@@ -12,6 +12,7 @@ UNSUPPORTED_MAGICS = frozenset({b"RF64", b"BW64", b"RIFX", b"riff"})
 SIZE_UNKNOWN = 0xFFFFFFFF
 CHUNK_HEADER_SIZE = 8
 MAX_CHUNKS = 1024
+PAD_WINDOW_SIZE = 5
 MIN_FMT_SIZE = 16
 MIN_EXTENSIBLE_FMT_SIZE = 40
 MAX_FMT_SIZE = 1024
@@ -177,7 +178,11 @@ def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
             break
         if ref.payload_offset + size > file_size:
             break
-        offset = _next_offset(ref)
+        offset, pad_missing = _next_offset(ref, read_at, file_size)
+        if pad_missing:
+            q = ref.payload_offset + size
+            message = f"chunk {chunk_id!r} has odd size {size} but no pad byte at {q}"
+            findings.append(Finding(Code.ODD_CHUNK_PAD_MISSING, message, q))
 
     return _ScanResult(fmt, data, tuple(findings), limit_hit)
 
@@ -282,12 +287,24 @@ def _zero_size_data_has_bytes(read_at: ReadAt, ref: _ChunkRef, file_size: int) -
     return True
 
 
+def _resolve_pad(window: bytes, q: int, file_size: int) -> tuple[bool, int]:
+    if q == file_size:
+        return True, q
+    if _plausible_id(window[0:4]) and not _plausible_id(window[1:5]):
+        return True, q
+    return False, q + 1
+
+
 def _plausible_id(chunk_id: bytes) -> bool:
     return len(chunk_id) == 4 and all(0x20 <= b <= 0x7E for b in chunk_id)
 
 
-def _next_offset(ref: _ChunkRef) -> int:
-    return ref.payload_offset + ref.size + (ref.size & 1)
+def _next_offset(ref: _ChunkRef, read_at: ReadAt, file_size: int) -> tuple[int, bool]:
+    q = ref.payload_offset + ref.size
+    if ref.size % 2 == 0:
+        return q, False
+    pad_missing, next_offset = _resolve_pad(read_at(q, PAD_WINDOW_SIZE), q, file_size)
+    return next_offset, pad_missing
 
 
 def _file_size(f: BinaryIO) -> int:
