@@ -1,4 +1,5 @@
 import io
+from dataclasses import dataclass
 
 import pytest
 
@@ -54,6 +55,58 @@ CASES = {
     # fmt payload starts at offset 20; cut 10 bytes into it.
     "W_cut_in_fmt": (A[:30], {"FMT_INVALID", "NO_DATA_CHUNK"}, {"RIFF_SIZE_EXCEEDS_FILE"}),
 }
+
+
+@dataclass(frozen=True)
+class Layout:
+    riff_header_end: int
+    fmt_payload_start: int
+    fmt_end: int
+    data_payload_start: int
+    end: int
+
+
+def layout_of(fmt_chunk: bytes, data_chunk: bytes) -> Layout:
+    chunk_header = len(chunk(b"fmt ", b""))
+    riff_header_end = len(wav([]))
+    fmt_end = riff_header_end + len(fmt_chunk)
+    return Layout(
+        riff_header_end=riff_header_end,
+        fmt_payload_start=riff_header_end + chunk_header,
+        fmt_end=fmt_end,
+        data_payload_start=fmt_end + chunk_header,
+        end=fmt_end + len(data_chunk),
+    )
+
+
+def expected_for_cut(n: int, at: Layout) -> tuple[set[str], set[str]]:
+    if n < at.riff_header_end:
+        return {"NOT_RIFF_WAVE"}, set()
+    warnings = {"RIFF_SIZE_EXCEEDS_FILE"} if n < at.end else set()
+    if n < at.fmt_payload_start:
+        return {"NO_FMT_CHUNK", "NO_DATA_CHUNK"}, warnings
+    if n < at.fmt_end:
+        return {"FMT_INVALID", "NO_DATA_CHUNK"}, warnings
+    if n < at.data_payload_start:
+        return {"NO_DATA_CHUNK"}, warnings
+    if n < at.end:
+        aligned = (n - at.data_payload_start) % FRAME_SIZE == 0
+        return {"DATA_EXCEEDS_FILE"} | (set() if aligned else {"DATA_NOT_FRAME_ALIGNED"}), warnings
+    return set(), set()
+
+
+@pytest.mark.parametrize("fmt_chunk", [FMT, FMT_EXT], ids=["A_pcm", "F_extensible"])
+def test_every_cut_has_exact_findings(fmt_chunk):
+    data = wav([fmt_chunk, DATA])
+    at = layout_of(fmt_chunk, DATA)
+    assert at.end == len(data)
+    mismatches = []
+    for n in range(len(data) + 1):
+        report = validate(io.BytesIO(data[:n]))
+        actual = ({f.code for f in report.errors}, {f.code for f in report.warnings})
+        if actual != expected_for_cut(n, at):
+            mismatches.append((n, actual, expected_for_cut(n, at)))
+    assert mismatches == []
 
 
 @pytest.mark.parametrize("name", CASES)

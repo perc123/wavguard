@@ -27,6 +27,9 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+wavguard = "wavguard.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/perc123/wavguard"
 Issues = "https://github.com/perc123/wavguard/issues"

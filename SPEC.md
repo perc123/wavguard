@@ -146,16 +146,45 @@ validate(source, *, strict=False) -> Report
 ### Command line
 
 ```
-wavguard [--strict] FILE
+wavguard [--strict] [--version] FILE
 ```
 
-It prints one finding per line, `<offset> <severity> <code> <message>`. The offset is in decimal, or `-` when it is `None`. `--strict` calls `validate(..., strict=True)`, so warnings count as errors.
+The CLI is built on `argparse`. `--strict` calls `validate(..., strict=True)`, so warnings count as errors. `--version` prints `wavguard <version>` to stdout and exits 0.
+
+**Exit codes**
 
 | Exit code | Meaning |
 |-----------|---------|
-| 0 | `ok` |
-| 1 | Errors found (or warnings, with `--strict`) |
-| 2 | Usage or I/O problem |
+| 0 | No errors. With `--strict`, no warnings either. |
+| 1 | At least one finding that counts: an error, or a warning with `--strict`. |
+| 2 | Usage error, or the file can't be read (missing, a directory, no permission, not seekable), or an internal error. |
+
+A file that can be read but isn't a WAV file is a finding (case L), so it exits 1, not 2. An internal error never exits 1, so a bug in wavguard is never reported as an invalid file.
+
+**Streams.** Findings and the summary go to stdout. Usage errors, I/O errors and internal errors go to stderr, and in those cases stdout stays empty. Internal errors print as `wavguard: internal error: …`.
+
+**Finding lines.** Each finding gets one line:
+
+```
+FILE:OFFSET: SEVERITY CODE message
+```
+
+- `FILE` is the path as given on the command line.
+- `OFFSET` is in decimal. When the offset is `None`, the `:OFFSET` part is left out: `FILE: SEVERITY CODE message`.
+- `SEVERITY` is `error` or `warning`.
+- Errors come first, then warnings, each in the report's file order.
+
+**Summary line.** A final line is always printed:
+
+| Situation | Summary |
+|-----------|---------|
+| No findings | `FILE: OK` |
+| Passing, with warnings | `FILE: OK (1 warning)` |
+| Failing | `FILE: FAILED (2 errors, 1 warning)` |
+
+Only counts that aren't zero are listed. With `--strict` and warnings only, the summary is `FILE: FAILED (1 warning)`.
+
+**Not in v0.1:** more than one file, `--json` output, and reading from stdin (`-`).
 
 ## 6. Non-goals
 
