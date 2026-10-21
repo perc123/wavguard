@@ -50,6 +50,14 @@ def _validate_open(f: BinaryIO, strict: bool) -> Report:
     findings, keep_going = _check_header(head, file_size)
     if not keep_going:
         return Report(findings=tuple(findings), strict=strict)
+
+    scan = _scan_chunks(lambda offset, length: _read_at(f, offset, length), file_size)
+    findings.extend(scan.findings)
+    if not scan.limit_hit:
+        if scan.fmt is None:
+            findings.append(Finding(Code.NO_FMT_CHUNK, "no fmt chunk found", None))
+        if scan.data is None:
+            findings.append(Finding(Code.NO_DATA_CHUNK, "no data chunk found", None))
     return Report(findings=tuple(findings), strict=strict)
 
 
