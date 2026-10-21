@@ -76,6 +76,8 @@ Checks run in this order:
    - Format check (the tag, then the SubFormat for `0xFFFE`): `UNSUPPORTED_FORMAT`.
    - Field checks: `FMT_INVALID`.
    - Compute the frame size and compare block_align with it.
+
+   For an extensible `fmt `, cbSize and the valid-bits field are not checked in v0.1.
 4. **`data`.** Classify the declared size first:
    - `0xFFFFFFFF`: report `DATA_SIZE_UNKNOWN`. Usable bytes are everything to the end of the file. There is no exceeds check.
    - `0`: apply the zero-size rule (§4.3). Usable bytes are 0.
@@ -84,7 +86,7 @@ Checks run in this order:
    Then report `DATA_NOT_FRAME_ALIGNED` if usable bytes are not divisible by the frame size.
 5. **Missing chunks.** Report `NO_FMT_CHUNK` or `NO_DATA_CHUNK` once the scan ends, unless the scan stopped on `LIMIT_EXCEEDED`. In that case the chunk may exist beyond the limit, so absence is not reported.
 
-If `fmt ` is missing, invalid, unsupported or over the size limit, every check that needs the frame size is skipped, and the frame values in the report are `None`.
+If `fmt ` is missing, invalid, unsupported or over the size limit, every check that needs the frame size is skipped. `channels`, `bits_per_sample`, `sample_rate`, `frame_size`, `frames_declared` and `complete_frames` in the report are all `None` unless `fmt ` is valid and supported.
 
 ### 4.3 Plausibility rules
 
@@ -134,7 +136,7 @@ validate(source, *, strict=False) -> Report
 | `ok` | `bool` | No errors. With `strict=True`, no warnings either. |
 | `errors` | `list[Finding]` | Error findings, in file order |
 | `warnings` | `list[Finding]` | Warning findings, in file order |
-| `channels`, `bits_per_sample`, `sample_rate` | `int \| None` | From `fmt ` |
+| `channels`, `bits_per_sample`, `sample_rate` | `int \| None` | From `fmt `. `None` unless `fmt ` is valid and supported. |
 | `frame_size` | `int \| None` | §4.2 |
 | `frames_declared` | `int \| None` | declared data size ÷ frame size, rounded down. `None` when the size is unknown. |
 | `complete_frames` | `int \| None` | usable bytes ÷ frame size, rounded down |
