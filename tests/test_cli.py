@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -7,7 +8,8 @@ import pytest
 
 import wavguard
 from builders import chunk, fmt_payload, frames, wav
-from wavguard import cli
+from wavguard import Code, cli
+from wavguard.model import SEVERITY_OF
 
 
 @pytest.fixture
@@ -65,6 +67,33 @@ def test_warning_only_fails_strict(capsys, write):
     code, out, _ = run(capsys, "--strict", path)
     assert code == 1
     assert out[-1] == f"{path}: FAILED (1 warning)"
+
+
+@pytest.mark.parametrize("flag_first", [True, False], ids=["strict_before_file", "strict_after_file"])
+def test_strict_position_does_not_matter(capsys, write, flag_first):
+    path = write(wav() + frames(1))
+    argv = ["--strict", path] if flag_first else [path, "--strict"]
+    code, out, _ = run(capsys, *argv)
+    assert code == 1
+    assert out[-1] == f"{path}: FAILED (1 warning)"
+
+
+FINDING_LINE = re.compile(r"^(?::(?P<offset>\d+))?: (?P<severity>error|warning) (?P<code>[A-Z_]+) (?P<message>\S.*)$")
+
+
+def test_every_finding_line_matches_format(capsys, write):
+    path = write(wav()[:30])  # case W: offsets 12 and 4, plus NO_DATA_CHUNK with no offset
+    _, out, _ = run(capsys, path)
+    *findings, summary = out
+    assert summary == f"{path}: FAILED (2 errors, 1 warning)"
+    parsed = []
+    for line in findings:
+        assert line.startswith(path), line
+        match = FINDING_LINE.match(line[len(path) :])
+        assert match, line
+        assert match["severity"] == SEVERITY_OF[Code(match["code"])]
+        parsed.append((match["code"], match["offset"]))
+    assert parsed == [("FMT_INVALID", "12"), ("NO_DATA_CHUNK", None), ("RIFF_SIZE_EXCEEDS_FILE", "4")]
 
 
 def test_readable_non_wav_is_a_finding(capsys, write):
@@ -146,8 +175,19 @@ def test_internal_error_exits_2(capsys, write, monkeypatch):
     assert "boom" in err
 
 
+def wavguard_subprocess(*args):
+    return subprocess.run([sys.executable, "-m", "wavguard", *args], capture_output=True, text=True)
+
+
 def test_python_dash_m(write):
     path = write(wav()[:-4])
-    result = subprocess.run([sys.executable, "-m", "wavguard", path], capture_output=True, text=True)
+    result = wavguard_subprocess(path)
     assert result.returncode == 1
     assert result.stdout.splitlines()[-1] == f"{path}: FAILED (2 errors, 1 warning)"
+    assert result.stderr == ""
+
+
+def test_python_dash_m_version():
+    result = wavguard_subprocess("--version")
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"wavguard {wavguard.__version__}"
