@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wavguard"
+dynamic = ["version"]
+description = "Strict validator for WAV files: reports truncated, misaligned and inconsistent data chunks instead of silently accepting them."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fanis Gioles" }]
+keywords = ["wav", "audio", "validation", "riff"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/perc123/wavguard"
+Issues = "https://github.com/perc123/wavguard/issues"
+
+[tool.hatch.version]
+path = "src/wavguard/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wavguard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
