@@ -1,5 +1,7 @@
 import os
 import struct
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import BinaryIO
 
 from wavguard.model import Code, Finding, Report
@@ -7,6 +9,26 @@ from wavguard.model import Code, Finding, Report
 HEADER_SIZE = 12
 UNSUPPORTED_MAGICS = frozenset({b"RF64", b"BW64", b"RIFX", b"riff"})
 SIZE_UNKNOWN = 0xFFFFFFFF
+CHUNK_HEADER_SIZE = 8
+MAX_CHUNKS = 1024
+
+ReadAt = Callable[[int, int], bytes]
+
+
+@dataclass(frozen=True)
+class _ChunkRef:
+    id: bytes
+    header_offset: int
+    payload_offset: int
+    size: int
+
+
+@dataclass(frozen=True)
+class _ScanResult:
+    fmt: _ChunkRef | None
+    data: _ChunkRef | None
+    findings: tuple[Finding, ...]
+    limit_hit: bool
 
 
 def validate(source: str | os.PathLike[str] | BinaryIO, *, strict: bool = False) -> Report:
@@ -55,6 +77,52 @@ def _check_header(head: bytes, file_size: int) -> tuple[list[Finding], bool]:
             message = f"{file_size - riff_end} bytes follow the end of the RIFF chunk at {riff_end}"
             findings.append(Finding(Code.TRAILING_BYTES, message, riff_end))
     return findings, True
+
+
+def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
+    # Terminates: every pass advances at least CHUNK_HEADER_SIZE bytes or stops, and MAX_CHUNKS caps the passes.
+    offset = HEADER_SIZE
+    count = 0
+    fmt: _ChunkRef | None = None
+    data: _ChunkRef | None = None
+    findings: list[Finding] = []
+    limit_hit = False
+
+    while file_size - offset >= CHUNK_HEADER_SIZE:
+        if count == MAX_CHUNKS:
+            message = f"more than {MAX_CHUNKS} chunks; scanning stopped"
+            findings.append(Finding(Code.LIMIT_EXCEEDED, message, offset))
+            limit_hit = True
+            break
+
+        header = read_at(offset, CHUNK_HEADER_SIZE)
+        chunk_id = header[:4]
+        if not _plausible_id(chunk_id):
+            break
+        count += 1
+        (size,) = struct.unpack_from("<I", header, 4)
+        ref = _ChunkRef(chunk_id, offset, offset + CHUNK_HEADER_SIZE, size)
+
+        if chunk_id == b"fmt " and fmt is None:
+            fmt = ref
+        elif chunk_id == b"data" and data is None:
+            data = ref
+
+        if chunk_id == b"data" and size == SIZE_UNKNOWN:
+            break
+        if ref.payload_offset + size > file_size:
+            break
+        offset = _next_offset(ref)
+
+    return _ScanResult(fmt, data, tuple(findings), limit_hit)
+
+
+def _plausible_id(chunk_id: bytes) -> bool:
+    return len(chunk_id) == 4 and all(0x20 <= b <= 0x7E for b in chunk_id)
+
+
+def _next_offset(ref: _ChunkRef) -> int:
+    return ref.payload_offset + ref.size + (ref.size & 1)
 
 
 def _file_size(f: BinaryIO) -> int:
