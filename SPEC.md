@@ -7,7 +7,7 @@ wavguard is a strict validator for WAV files. It reports structural problems tha
 ## 2. Principles
 
 - **Own parser, standard library only.** wavguard never imports `soundfile`, `wave` or any other audio library, so it shares no code with the readers it checks. It requires Python 3.11 or newer.
-- **Headers, not audio.** It reads the RIFF header, every chunk header and the `fmt ` payload. From any other chunk's payload it reads at most 8 bytes, and only for the plausibility checks in §4.3. It never reads audio samples.
+- **Headers, not audio.** It reads the RIFF header, every chunk header and the `fmt ` payload. From the `data` payload it reads at most 8 bytes, and only for the zero-size rule in §4.3. It reads no other chunk payload. It never reads audio samples.
 - **Bounded work.** A hostile file cannot make wavguard loop or allocate without limit:
 
 | Limit | Value | When exceeded |
@@ -33,26 +33,26 @@ wavguard is a strict validator for WAV files. It reports structural problems tha
 
 ## 4. Violations
 
-Every finding has a stable **code**, a **severity** (`error` or `warning`), a **message** and an **offset**. The offset is `int | None`: it is the byte position of the header or field involved, and `None` when the finding is about something absent (for example `NO_DATA_CHUNK`).
+Every finding has a stable **code**, a **severity** (`error` or `warning`), a **message** and an **offset**. The offset is `int | None`. The Offset column below defines it for each code. A chunk header's offset is the position of its 4-byte ID.
 
 ### 4.1 Codes
 
-| Code | Severity | Meaning |
-|------|----------|---------|
-| `NOT_RIFF_WAVE` | error | The file is shorter than 12 bytes, or does not start with `RIFF`…`WAVE`, and its magic is not one of the unsupported ones in §3. |
-| `UNSUPPORTED_FORMAT` | error | The magic is `RF64`, `BW64`, `RIFX` or `riff`, or the format tag or SubFormat is not in scope. |
-| `NO_FMT_CHUNK` | error | No `fmt ` chunk was found. |
-| `NO_DATA_CHUNK` | error | No `data` chunk was found. |
-| `FMT_INVALID` | error | The `fmt ` payload is shorter than 16 bytes (40 for tag `0xFFFE`), or channels, sample rate or block_align is 0, or bits per sample is 0 or not a multiple of 8. |
-| `BLOCK_ALIGN_MISMATCH` | error | block_align differs from the frame size (§4.2). |
-| `DATA_EXCEEDS_FILE` | error | A regular declared data size (§4.2) is larger than the number of bytes from the data payload start to the end of the file. |
-| `DATA_NOT_FRAME_ALIGNED` | error | Usable data bytes (§4.2) are not a whole number of frames. |
-| `DATA_SIZE_ZERO_WITH_DATA` | error | The declared data size is 0 but data bytes follow (rule in §4.3). |
-| `LIMIT_EXCEEDED` | error | A limit from §2 was hit. |
-| `DATA_SIZE_UNKNOWN` | warning | The declared data size is `0xFFFFFFFF` (a streamed file whose size was never written back). |
-| `RIFF_SIZE_EXCEEDS_FILE` | warning | 8 + RIFF size > file size, which suggests truncation. |
-| `TRAILING_BYTES` | warning | file size > 8 + RIFF size: there are bytes after the end of the RIFF chunk. |
-| `ODD_CHUNK_PAD_MISSING` | warning | An odd-sized chunk is not followed by its pad byte (rule in §4.3). |
+| Code | Severity | Offset | Meaning |
+|------|----------|--------|---------|
+| `NOT_RIFF_WAVE` | error | 0 | The file is shorter than 12 bytes, or does not start with `RIFF`…`WAVE`, and its magic is not one of the unsupported ones in §3. |
+| `UNSUPPORTED_FORMAT` | error | 0 for a magic. Otherwise the format tag field (`fmt ` payload start) or the SubFormat field (`fmt ` payload start + 24). | The magic is `RF64`, `BW64`, `RIFX` or `riff`, or the format tag or SubFormat is not in scope. |
+| `NO_FMT_CHUNK` | error | `None` | No `fmt ` chunk was found. |
+| `NO_DATA_CHUNK` | error | `None` | No `data` chunk was found. |
+| `FMT_INVALID` | error | `fmt ` chunk header | The `fmt ` payload (§4.2) is shorter than 16 bytes (40 for tag `0xFFFE`); or channels, sample rate or block_align is 0; or bits per sample is 0 or not a multiple of 8; or the format is float and bits per sample is not 32 or 64. |
+| `BLOCK_ALIGN_MISMATCH` | error | `fmt ` payload start + 12 | block_align differs from the frame size (§4.2). |
+| `DATA_EXCEEDS_FILE` | error | `data` chunk header | A regular declared data size (§4.2) is larger than the number of bytes from the data payload start to the end of the file. |
+| `DATA_NOT_FRAME_ALIGNED` | error | `data` chunk header | Usable data bytes (§4.2) are not a whole number of frames. |
+| `DATA_SIZE_ZERO_WITH_DATA` | error | *p* (§4.3) | The declared data size is 0 but data bytes follow (rule in §4.3). |
+| `LIMIT_EXCEEDED` | error | Header of the chunk that tripped the limit | A limit from §2 was hit. |
+| `DATA_SIZE_UNKNOWN` | warning | `data` chunk header | The declared data size is `0xFFFFFFFF` (a streamed file whose size was never written back). |
+| `RIFF_SIZE_EXCEEDS_FILE` | warning | 4 | 8 + RIFF size > file size, which suggests truncation. |
+| `TRAILING_BYTES` | warning | 8 + RIFF size | file size > 8 + RIFF size: there are bytes after the end of the RIFF chunk. |
+| `ODD_CHUNK_PAD_MISSING` | warning | *q* (§4.3) | An odd-sized chunk is not followed by its pad byte (rule in §4.3). |
 
 A RIFF size of `0xFFFFFFFF` means unknown. Neither RIFF size warning fires for it.
 
@@ -66,10 +66,16 @@ Checks run in this order:
 2. **Chunk scan.** Start at offset 12 and continue to the end of the file, not to the end of the RIFF chunk, so a wrong RIFF size cannot hide chunks. Each header is a 4-byte ID followed by a little-endian 32-bit size. The next header sits at payload start + size, plus 1 if the size is odd (subject to the pad rule in §4.3). Only the first `fmt ` and the first `data` chunk are used. Scanning stops when:
    - fewer than 8 bytes remain,
    - the next ID is not plausible (§4.3),
-   - a non-`data` chunk runs past the end of the file,
+   - any chunk, including `fmt ` or `data`, runs past the end of the file (that chunk is still checked),
    - the `data` size is unknown, or
    - the chunk limit is reached.
-3. **`fmt `.** Apply the size limit, then the format check (`UNSUPPORTED_FORMAT`), then the field checks (`FMT_INVALID`). Then compute the frame size and compare block_align with it.
+3. **`fmt `.** The payload is `min(declared size, bytes to the end of the file)`. Checks run in this order, and the first finding ends the `fmt ` checks:
+   - Declared size over 1024: `LIMIT_EXCEEDED`.
+   - Payload under 16 bytes: `FMT_INVALID`, before any field is read.
+   - Read the format tag. If it is `0xFFFE` and the payload is under 40 bytes: `FMT_INVALID`.
+   - Format check (the tag, then the SubFormat for `0xFFFE`): `UNSUPPORTED_FORMAT`.
+   - Field checks: `FMT_INVALID`.
+   - Compute the frame size and compare block_align with it.
 4. **`data`.** Classify the declared size first:
    - `0xFFFFFFFF`: report `DATA_SIZE_UNKNOWN`. Usable bytes are everything to the end of the file. There is no exceeds check.
    - `0`: apply the zero-size rule (§4.3). Usable bytes are 0.
@@ -152,6 +158,7 @@ It prints one finding per line, `<offset> <severity> <code> <message>`. The offs
 - Compressed formats
 - Plugins or a format registry
 - Validating non-seekable streams
+- Checking chunk order or duplicate chunks: `fmt ` after `data` is accepted, and later duplicates are ignored
 
 ## 7. Acceptance cases
 
@@ -165,7 +172,8 @@ Fixture constraints, so each case tests what it claims:
 - **B–E, K** need a frame size that doesn't divide 4 and isn't 8, so a 4-byte cut breaks alignment and block_align 8 is wrong. For example 24-bit stereo, which has 6-byte frames.
 - **T, U** need an odd frame size, so odd-length data is still frame-aligned. For example 24-bit mono, which has 3-byte frames.
 - **H, I, S:** the bytes after the data header (H, I) or after the RIFF end (S) must not start with a plausible chunk ID. Zeros work.
-- **RIFF size:** in B, C and E it is left as it was. Where a case says "patched", it is patched. In every other case it matches the file.
+- **U:** the `LIST` chunk's size must be under `0x20`. Then its first size byte isn't printable, and the pad heuristic can't see a plausible ID at both *q* and *q* + 1.
+- **RIFF size:** in B, C, E and W it is left as it was. Where a case says "patched", it is patched. In every other case it matches the file.
 
 | Case | File | Errors | Warnings |
 |------|------|--------|----------|
@@ -191,3 +199,4 @@ Fixture constraints, so each case tests what it claims:
 | T | Odd-length data, with its pad byte, before a `LIST` chunk | — | — |
 | U | Same as T without the pad byte | — | `ODD_CHUNK_PAD_MISSING` |
 | V | `fmt `, `data`, then 5000 empty `JUNK` chunks | `LIMIT_EXCEEDED` | — |
+| W | A cut 10 bytes into the `fmt ` payload | `FMT_INVALID`, `NO_DATA_CHUNK` | `RIFF_SIZE_EXCEEDS_FILE` |
