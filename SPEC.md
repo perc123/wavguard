@@ -121,7 +121,13 @@ These rules are heuristics. Audio whose first four bytes happen to be printable 
 validate(source, *, strict=False) -> Report
 ```
 
-`source` is a `str`, an `os.PathLike` or a seekable binary file object. I/O failures raise `OSError`, and a file object that can't seek raises `ValueError`. Malformed or hostile content never raises: it is reported as findings.
+`source` is a `str`, an `os.PathLike` or a seekable binary file object.
+
+- `validate()` never closes a file object you pass in. The position it leaves the object at is undefined.
+- A source that is neither a path nor a binary file object, such as a text-mode file, raises `TypeError`.
+- A file object that can't seek raises `ValueError`.
+- I/O failures raise `OSError`.
+- Malformed or hostile content never raises. It is reported as findings.
 
 | `Report` field | Type | Meaning |
 |----------------|------|---------|
