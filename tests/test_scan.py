@@ -76,7 +76,16 @@ CASES = {
         [("ODD_CHUNK_PAD_MISSING", 115)],
         False,
     ),
+    "zero_data_at_eof": (wav([FMT, chunk(b"data", b"")]), FMT_AT_12, (36, 44, 0), [], False),
     "zero_data_then_chunk": (wav([chunk(b"data", b""), FMT]), (20, 28, 16), (12, 20, 0), [], False),
+    "zero_data_then_exactly_8_byte_chunk": (wav([FMT, chunk(b"data", b""), JUNK]), FMT_AT_12, (36, 44, 0), [], False),
+    "zero_data_then_7_printable_bytes": (
+        wav([FMT, chunk(b"data", b"JUNKxyz", size=0, pad=False)]),
+        FMT_AT_12,
+        (36, 44, 0),
+        [("DATA_SIZE_ZERO_WITH_DATA", 44)],
+        False,
+    ),
     "zero_data_then_audio": (
         wav([FMT, chunk(b"data", frames(), size=0)]),
         FMT_AT_12,

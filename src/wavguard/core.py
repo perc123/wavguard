@@ -84,6 +84,16 @@ def _validate_open(f: BinaryIO, strict: bool) -> Report:
         fmt = _check_fmt(read_at, scan.fmt, file_size)
         findings.extend(fmt.findings)
         info = fmt.info
+    frame_size = info.frame_size if info else None
+
+    frames_declared = complete_frames = None
+    if scan.data is not None:
+        findings.extend(_check_data(scan.data, file_size, frame_size))
+        if frame_size:
+            if scan.data.size != SIZE_UNKNOWN:
+                frames_declared = scan.data.size // frame_size
+            complete_frames = _usable_bytes(scan.data, file_size) // frame_size
+
     if not scan.limit_hit:
         if scan.fmt is None:
             findings.append(Finding(Code.NO_FMT_CHUNK, "no fmt chunk found", None))
@@ -99,6 +109,8 @@ def _validate_open(f: BinaryIO, strict: bool) -> Report:
         bits_per_sample=info.bits_per_sample,
         sample_rate=info.sample_rate,
         frame_size=info.frame_size,
+        frames_declared=frames_declared,
+        complete_frames=complete_frames,
     )
 
 
@@ -157,6 +169,10 @@ def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
         elif chunk_id == b"data" and data is None:
             data = ref
 
+        if ref is data and size == 0 and _zero_size_data_has_bytes(read_at, ref, file_size):
+            message = "data size is 0, but the bytes after its header are audio, not a chunk header"
+            findings.append(Finding(Code.DATA_SIZE_ZERO_WITH_DATA, message, ref.payload_offset))
+            break
         if chunk_id == b"data" and size == SIZE_UNKNOWN:
             break
         if ref.payload_offset + size > file_size:
@@ -228,8 +244,42 @@ def _parse_fmt(payload: bytes, header_offset: int, payload_offset: int) -> _FmtR
     return _FmtResult(tuple(findings), info)
 
 
+def _check_data(ref: _ChunkRef, file_size: int, frame_size: int | None) -> list[Finding]:
+    findings = []
+    available = file_size - ref.payload_offset
+
+    if ref.size == SIZE_UNKNOWN:
+        message = f"data size is {SIZE_UNKNOWN:#x} (unknown); assuming data runs to the end of the file"
+        findings.append(Finding(Code.DATA_SIZE_UNKNOWN, message, ref.header_offset))
+    elif ref.size > available:
+        message = f"data size {ref.size} exceeds the {available} bytes present"
+        findings.append(Finding(Code.DATA_EXCEEDS_FILE, message, ref.header_offset))
+
+    usable = _usable_bytes(ref, file_size)
+    if frame_size and usable % frame_size:
+        message = f"{usable} data bytes are not a whole number of {frame_size}-byte frames"
+        findings.append(Finding(Code.DATA_NOT_FRAME_ALIGNED, message, ref.header_offset))
+    return findings
+
+
+def _usable_bytes(ref: _ChunkRef, file_size: int) -> int:
+    available = file_size - ref.payload_offset
+    if ref.size == SIZE_UNKNOWN:
+        return available
+    return min(ref.size, available)
+
+
 def _fmt_failure(code: Code, message: str, offset: int) -> _FmtResult:
     return _FmtResult((Finding(code, message, offset),), None)
+
+
+def _zero_size_data_has_bytes(read_at: ReadAt, ref: _ChunkRef, file_size: int) -> bool:
+    remaining = file_size - ref.payload_offset
+    if remaining == 0:
+        return False
+    if remaining >= CHUNK_HEADER_SIZE and _plausible_id(read_at(ref.payload_offset, 4)):
+        return False
+    return True
 
 
 def _plausible_id(chunk_id: bytes) -> bool:
