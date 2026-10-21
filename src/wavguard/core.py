@@ -2,6 +2,7 @@ import os
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import BinaryIO
 
 from wavguard.model import Code, Finding, Report
@@ -11,6 +12,13 @@ UNSUPPORTED_MAGICS = frozenset({b"RF64", b"BW64", b"RIFX", b"riff"})
 SIZE_UNKNOWN = 0xFFFFFFFF
 CHUNK_HEADER_SIZE = 8
 MAX_CHUNKS = 1024
+MIN_FMT_SIZE = 16
+MIN_EXTENSIBLE_FMT_SIZE = 40
+MAX_FMT_SIZE = 1024
+PCM_TAG = 1
+FLOAT_TAG = 3
+EXTENSIBLE_TAG = 0xFFFE
+SUBFORMAT_SUFFIX = bytes.fromhex("00 00 00 00 10 00 80 00 00 AA 00 38 9B 71")
 
 ReadAt = Callable[[int, int], bytes]
 
@@ -29,6 +37,22 @@ class _ScanResult:
     data: _ChunkRef | None
     findings: tuple[Finding, ...]
     limit_hit: bool
+
+
+@dataclass(frozen=True)
+class _FmtInfo:
+    tag: int
+    channels: int
+    sample_rate: int
+    bits_per_sample: int
+    block_align: int
+    frame_size: int
+
+
+@dataclass(frozen=True)
+class _FmtResult:
+    findings: tuple[Finding, ...]
+    info: _FmtInfo | None
 
 
 def validate(source: str | os.PathLike[str] | BinaryIO, *, strict: bool = False) -> Report:
@@ -51,14 +75,31 @@ def _validate_open(f: BinaryIO, strict: bool) -> Report:
     if not keep_going:
         return Report(findings=tuple(findings), strict=strict)
 
-    scan = _scan_chunks(lambda offset, length: _read_at(f, offset, length), file_size)
+    read_at = partial(_read_at, f)
+    scan = _scan_chunks(read_at, file_size)
     findings.extend(scan.findings)
+
+    info = None
+    if scan.fmt is not None:
+        fmt = _check_fmt(read_at, scan.fmt, file_size)
+        findings.extend(fmt.findings)
+        info = fmt.info
     if not scan.limit_hit:
         if scan.fmt is None:
             findings.append(Finding(Code.NO_FMT_CHUNK, "no fmt chunk found", None))
         if scan.data is None:
             findings.append(Finding(Code.NO_DATA_CHUNK, "no data chunk found", None))
-    return Report(findings=tuple(findings), strict=strict)
+
+    if info is None:
+        return Report(findings=tuple(findings), strict=strict)
+    return Report(
+        findings=tuple(findings),
+        strict=strict,
+        channels=info.channels,
+        bits_per_sample=info.bits_per_sample,
+        sample_rate=info.sample_rate,
+        frame_size=info.frame_size,
+    )
 
 
 def _check_header(head: bytes, file_size: int) -> tuple[list[Finding], bool]:
@@ -123,6 +164,72 @@ def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
         offset = _next_offset(ref)
 
     return _ScanResult(fmt, data, tuple(findings), limit_hit)
+
+
+def _check_fmt(read_at: ReadAt, ref: _ChunkRef, file_size: int) -> _FmtResult:
+    if ref.size > MAX_FMT_SIZE:
+        message = f"fmt chunk declares {ref.size} bytes, over the {MAX_FMT_SIZE}-byte limit"
+        return _FmtResult((Finding(Code.LIMIT_EXCEEDED, message, ref.header_offset),), None)
+
+    length = min(ref.size, file_size - ref.payload_offset)
+    if length < MIN_FMT_SIZE:
+        message = f"fmt payload has {length} bytes (declared {ref.size}), fewer than the {MIN_FMT_SIZE} required"
+        return _FmtResult((Finding(Code.FMT_INVALID, message, ref.header_offset),), None)
+
+    payload = read_at(ref.payload_offset, length)
+    return _parse_fmt(payload, ref.header_offset, ref.payload_offset)
+
+
+def _parse_fmt(payload: bytes, header_offset: int, payload_offset: int) -> _FmtResult:
+    if len(payload) < MIN_FMT_SIZE:
+        message = f"fmt payload has {len(payload)} bytes, fewer than the {MIN_FMT_SIZE} required"
+        return _fmt_failure(Code.FMT_INVALID, message, header_offset)
+
+    tag, channels, rate, _byte_rate, block_align, bits = struct.unpack_from("<HHIIHH", payload)
+
+    if tag == EXTENSIBLE_TAG:
+        if len(payload) < MIN_EXTENSIBLE_FMT_SIZE:
+            message = (
+                f"extensible fmt payload has {len(payload)} bytes, "
+                f"fewer than the {MIN_EXTENSIBLE_FMT_SIZE} required"
+            )
+            return _fmt_failure(Code.FMT_INVALID, message, header_offset)
+        subformat = payload[24:40]
+        (tag,) = struct.unpack_from("<H", subformat)
+        if subformat[2:] != SUBFORMAT_SUFFIX or tag not in (PCM_TAG, FLOAT_TAG):
+            message = f"extensible SubFormat {subformat.hex()} is not PCM or IEEE float"
+            return _fmt_failure(Code.UNSUPPORTED_FORMAT, message, payload_offset + 24)
+    elif tag not in (PCM_TAG, FLOAT_TAG):
+        message = f"format tag {tag:#06x} is not supported in v0.1"
+        return _fmt_failure(Code.UNSUPPORTED_FORMAT, message, payload_offset)
+
+    problems = []
+    if channels == 0:
+        problems.append("channels is 0")
+    if rate == 0:
+        problems.append("sample rate is 0")
+    if block_align == 0:
+        problems.append("block_align is 0")
+    if bits == 0:
+        problems.append("bits per sample is 0")
+    elif bits % 8:
+        problems.append(f"bits per sample {bits} is not a multiple of 8")
+    if tag == FLOAT_TAG and bits != 0 and bits not in (32, 64):
+        problems.append(f"float with {bits} bits per sample, expected 32 or 64")
+    if problems:
+        return _fmt_failure(Code.FMT_INVALID, "invalid fmt: " + "; ".join(problems), header_offset)
+
+    frame_size = channels * bits // 8
+    findings = []
+    if block_align != frame_size:
+        message = f"block_align is {block_align}, but {channels} channels x {bits // 8} bytes is {frame_size}"
+        findings.append(Finding(Code.BLOCK_ALIGN_MISMATCH, message, payload_offset + 12))
+    info = _FmtInfo(tag, channels, rate, bits, block_align, frame_size)
+    return _FmtResult(tuple(findings), info)
+
+
+def _fmt_failure(code: Code, message: str, offset: int) -> _FmtResult:
+    return _FmtResult((Finding(code, message, offset),), None)
 
 
 def _plausible_id(chunk_id: bytes) -> bool:
