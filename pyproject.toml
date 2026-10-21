@@ -39,3 +39,6 @@ packages = ["src/wavguard"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "differential: compares results with python-soundfile; skipped when it isn't installed",
+]
