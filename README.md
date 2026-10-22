@@ -1,5 +1,7 @@
 # wavguard
 
+[![CI](https://github.com/perc123/wavguard/actions/workflows/ci.yml/badge.svg)](https://github.com/perc123/wavguard/actions/workflows/ci.yml)
+
 A strict, dependency-free WAV validator that reports truncated or inconsistent files instead of silently reading around them.
 
 ## The problem
