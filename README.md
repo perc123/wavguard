@@ -22,7 +22,7 @@ ok.wav: OK
 
 $ wavguard cut.wav
 cut.wav:36: error DATA_EXCEEDS_FILE data size 43200 exceeds the 43196 bytes present
-cut.wav:36: error DATA_NOT_FRAME_ALIGNED 43196 data bytes are not a whole number of 9-byte frames
+cut.wav:36: error DATA_NOT_FRAME_ALIGNED 43196 bytes of data is not a whole number of 9-byte frames
 cut.wav:4: warning RIFF_SIZE_EXCEEDS_FILE RIFF size 43236 needs 43244 bytes, but the file is 43240 bytes
 cut.wav: FAILED (2 errors, 1 warning)
 ```
@@ -33,11 +33,11 @@ Warnings don't fail a run unless you pass `--strict`, which counts them as error
 
 ```console
 $ wavguard trailing.wav
-trailing.wav:43244: warning TRAILING_BYTES 6 bytes follow the end of the RIFF chunk at 43244
+trailing.wav:43244: warning TRAILING_BYTES 6 bytes after the RIFF chunk, which ends at 43244
 trailing.wav: OK (1 warning)
 
 $ wavguard --strict trailing.wav
-trailing.wav:43244: warning TRAILING_BYTES 6 bytes follow the end of the RIFF chunk at 43244
+trailing.wav:43244: warning TRAILING_BYTES 6 bytes after the RIFF chunk, which ends at 43244
 trailing.wav: FAILED (1 warning)
 ```
 
@@ -65,10 +65,10 @@ for finding in report.errors:
 ok: False
 frames: 4800 declared, 4799 complete
 DATA_EXCEEDS_FILE 36 data size 43200 exceeds the 43196 bytes present
-DATA_NOT_FRAME_ALIGNED 36 43196 data bytes are not a whole number of 9-byte frames
+DATA_NOT_FRAME_ALIGNED 36 43196 bytes of data is not a whole number of 9-byte frames
 ```
 
-`validate` accepts a path or a seekable binary file object, and takes `strict=True` for the `--strict` behaviour. The report also includes `warnings`, `channels`, `bits_per_sample`, `sample_rate` and `frame_size`.
+`validate` accepts a path or a seekable binary file object, and takes `strict=True` for the `--strict` behaviour. It raises `OSError` for a path it can't read, `ValueError` for a file object that can't seek, and `TypeError` for a text-mode file or any other type; problems inside the file are always reported as findings, never raised. The report also includes `warnings`, `channels`, `bits_per_sample`, `sample_rate` and `frame_size`.
 
 ## What it checks
 

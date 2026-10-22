@@ -117,7 +117,7 @@ def _validate_open(f: BinaryIO, strict: bool) -> Report:
 
 def _check_header(head: bytes, file_size: int) -> tuple[list[Finding], bool]:
     if file_size < HEADER_SIZE:
-        message = f"file is {file_size} bytes, shorter than the {HEADER_SIZE}-byte RIFF header"
+        message = f"file is {_plural(file_size, 'byte')}, shorter than the {HEADER_SIZE}-byte RIFF header"
         return [Finding(Code.NOT_RIFF_WAVE, message, 0)], False
 
     magic, form = head[0:4], head[8:12]
@@ -133,10 +133,13 @@ def _check_header(head: bytes, file_size: int) -> tuple[list[Finding], bool]:
     if riff_size != SIZE_UNKNOWN:
         riff_end = 8 + riff_size
         if riff_end > file_size:
-            message = f"RIFF size {riff_size} needs {riff_end} bytes, but the file is {file_size} bytes"
+            message = (
+                f"RIFF size {riff_size} needs {_plural(riff_end, 'byte')}, "
+                f"but the file is {_plural(file_size, 'byte')}"
+            )
             findings.append(Finding(Code.RIFF_SIZE_EXCEEDS_FILE, message, 4))
         elif file_size > riff_end:
-            message = f"{file_size - riff_end} bytes follow the end of the RIFF chunk at {riff_end}"
+            message = f"{_plural(file_size - riff_end, 'byte')} after the RIFF chunk, which ends at {riff_end}"
             findings.append(Finding(Code.TRAILING_BYTES, message, riff_end))
     return findings, True
 
@@ -181,7 +184,7 @@ def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
         offset, pad_missing = _next_offset(ref, read_at, file_size)
         if pad_missing:
             q = ref.payload_offset + size
-            message = f"chunk {chunk_id!r} has odd size {size} but no pad byte at {q}"
+            message = f"chunk '{chunk_id.decode('ascii')}' has odd size {size} but no pad byte at {q}"
             findings.append(Finding(Code.ODD_CHUNK_PAD_MISSING, message, q))
 
     return _ScanResult(fmt, data, tuple(findings), limit_hit)
@@ -189,12 +192,15 @@ def _scan_chunks(read_at: ReadAt, file_size: int) -> _ScanResult:
 
 def _check_fmt(read_at: ReadAt, ref: _ChunkRef, file_size: int) -> _FmtResult:
     if ref.size > MAX_FMT_SIZE:
-        message = f"fmt chunk declares {ref.size} bytes, over the {MAX_FMT_SIZE}-byte limit"
+        message = f"fmt chunk declares {_plural(ref.size, 'byte')}, over the {MAX_FMT_SIZE}-byte limit"
         return _FmtResult((Finding(Code.LIMIT_EXCEEDED, message, ref.header_offset),), None)
 
     length = min(ref.size, file_size - ref.payload_offset)
     if length < MIN_FMT_SIZE:
-        message = f"fmt payload has {length} bytes (declared {ref.size}), fewer than the {MIN_FMT_SIZE} required"
+        message = (
+            f"fmt payload has {_plural(length, 'byte')} (declared {ref.size}), "
+            f"fewer than the {MIN_FMT_SIZE} required"
+        )
         return _FmtResult((Finding(Code.FMT_INVALID, message, ref.header_offset),), None)
 
     payload = read_at(ref.payload_offset, length)
@@ -203,7 +209,7 @@ def _check_fmt(read_at: ReadAt, ref: _ChunkRef, file_size: int) -> _FmtResult:
 
 def _parse_fmt(payload: bytes, header_offset: int, payload_offset: int) -> _FmtResult:
     if len(payload) < MIN_FMT_SIZE:
-        message = f"fmt payload has {len(payload)} bytes, fewer than the {MIN_FMT_SIZE} required"
+        message = f"fmt payload has {_plural(len(payload), 'byte')}, fewer than the {MIN_FMT_SIZE} required"
         return _fmt_failure(Code.FMT_INVALID, message, header_offset)
 
     tag, channels, rate, _byte_rate, block_align, bits = struct.unpack_from("<HHIIHH", payload)
@@ -211,7 +217,7 @@ def _parse_fmt(payload: bytes, header_offset: int, payload_offset: int) -> _FmtR
     if tag == EXTENSIBLE_TAG:
         if len(payload) < MIN_EXTENSIBLE_FMT_SIZE:
             message = (
-                f"extensible fmt payload has {len(payload)} bytes, "
+                f"extensible fmt payload has {_plural(len(payload), 'byte')}, "
                 f"fewer than the {MIN_EXTENSIBLE_FMT_SIZE} required"
             )
             return _fmt_failure(Code.FMT_INVALID, message, header_offset)
@@ -243,7 +249,10 @@ def _parse_fmt(payload: bytes, header_offset: int, payload_offset: int) -> _FmtR
     frame_size = channels * bits // 8
     findings = []
     if block_align != frame_size:
-        message = f"block_align is {block_align}, but {channels} channels x {bits // 8} bytes is {frame_size}"
+        message = (
+            f"block_align is {block_align}, but {_plural(channels, 'channel')} "
+            f"x {_plural(bits // 8, 'byte')} is {frame_size}"
+        )
         findings.append(Finding(Code.BLOCK_ALIGN_MISMATCH, message, payload_offset + 12))
     info = _FmtInfo(tag, channels, rate, bits, block_align, frame_size)
     return _FmtResult(tuple(findings), info)
@@ -257,12 +266,12 @@ def _check_data(ref: _ChunkRef, file_size: int, frame_size: int | None) -> list[
         message = f"data size is {SIZE_UNKNOWN:#x} (unknown); assuming data runs to the end of the file"
         findings.append(Finding(Code.DATA_SIZE_UNKNOWN, message, ref.header_offset))
     elif ref.size > available:
-        message = f"data size {ref.size} exceeds the {available} bytes present"
+        message = f"data size {ref.size} exceeds the {_plural(available, 'byte')} present"
         findings.append(Finding(Code.DATA_EXCEEDS_FILE, message, ref.header_offset))
 
     usable = _usable_bytes(ref, file_size)
     if frame_size and usable % frame_size:
-        message = f"{usable} data bytes are not a whole number of {frame_size}-byte frames"
+        message = f"{_plural(usable, 'byte')} of data is not a whole number of {frame_size}-byte frames"
         findings.append(Finding(Code.DATA_NOT_FRAME_ALIGNED, message, ref.header_offset))
     return findings
 
@@ -282,9 +291,8 @@ def _zero_size_data_has_bytes(read_at: ReadAt, ref: _ChunkRef, file_size: int) -
     remaining = file_size - ref.payload_offset
     if remaining == 0:
         return False
-    if remaining >= CHUNK_HEADER_SIZE and _plausible_id(read_at(ref.payload_offset, 4)):
-        return False
-    return True
+    starts_next_chunk = remaining >= CHUNK_HEADER_SIZE and _plausible_id(read_at(ref.payload_offset, 4))
+    return not starts_next_chunk
 
 
 def _resolve_pad(window: bytes, q: int, file_size: int) -> tuple[bool, int]:
@@ -305,6 +313,10 @@ def _next_offset(ref: _ChunkRef, read_at: ReadAt, file_size: int) -> tuple[int, 
         return q, False
     pad_missing, next_offset = _resolve_pad(read_at(q, PAD_WINDOW_SIZE), q, file_size)
     return next_offset, pad_missing
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 def _file_size(f: BinaryIO) -> int:

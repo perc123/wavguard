@@ -1,6 +1,7 @@
 import io
 import os
 import random
+import re
 import struct
 import time
 import zlib
@@ -17,6 +18,7 @@ ITERATIONS = int(os.environ.get("WAVGUARD_FUZZ_ITERS", "5000"))
 # Per chunk the scanner reads one 8-byte header and at most one 5-byte pad window.
 MAX_READ_CALLS = 2 * MAX_CHUNKS + 16
 MAX_BYTES_READ = 32 * 1024
+WRONG_PLURAL = re.compile(r"(?<![\d.])1 (bytes|channels)\b")
 
 FMT = chunk(b"fmt ", fmt_payload())
 DATA = chunk(b"data", frames())
@@ -62,6 +64,7 @@ def check(data: bytes, context: str) -> None:
 
     for f in report.findings:
         assert isinstance(f.code, Code), where()
+        assert not WRONG_PLURAL.search(f.message), f"{f.message!r}: {where()}"
         assert f.offset is None or 0 <= f.offset <= len(data), f"{f}: {where()}"
 
     assert all(f.severity is Severity.ERROR for f in report.errors), where()
@@ -117,7 +120,7 @@ def mutate(rng: random.Random, data: bytes) -> tuple[str, bytes]:
     if kind == "field" and len(buf) >= 4:
         pos = rng.randrange(len(buf) - 3)
         (current,) = struct.unpack_from("<I", buf, pos)
-        value = rng.choice(SPECIAL_VALUES + ((current + 1) & 0xFFFFFFFF, (current - 1) & 0xFFFFFFFF))
+        value = rng.choice((*SPECIAL_VALUES, (current + 1) & 0xFFFFFFFF, (current - 1) & 0xFFFFFFFF))
         struct.pack_into("<I", buf, pos, value)
         return f"field at {pos} = {value:#x}", bytes(buf)
     if kind == "delete":
@@ -171,7 +174,7 @@ def structured_mutations():
         if b"data" in headers:
             pos = headers[b"data"] + 4
             (actual,) = struct.unpack_from("<I", data, pos)
-            for value in SIZE_VALUES + (actual - 1, actual + 1):
+            for value in (*SIZE_VALUES, actual - 1, actual + 1):
                 yield f"{name}_data_size_{value:#x}", with_field(data, pos, value)
         for garbage in (b"\x00\x01\x02\x03", b"\xff\xfe\x80\x7f"):
             yield f"{name}_first_id_{garbage.hex()}", data[:12] + garbage + data[16:]
@@ -190,7 +193,7 @@ def test_structured_mutation(label):
 
 def test_worst_case_chunk_count_stays_under_ceiling():
     odd_chunks = [chunk(b"JUNK", b"x")] * (MAX_CHUNKS + 100)
-    data = wav([FMT, DATA] + odd_chunks)
+    data = wav([FMT, DATA, *odd_chunks])
     check(data, "1124 odd chunks")
     assert {f.code for f in validate(io.BytesIO(data)).errors} == {"LIMIT_EXCEEDED"}
 
