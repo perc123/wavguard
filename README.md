@@ -11,7 +11,7 @@ Take a 3-channel, 24-bit WAV file with 4,800 frames and cut 4 bytes off the end.
 ## Install
 
 ```shell
-pip install git+https://github.com/perc123/wavguard
+pip install wavguard
 ```
 
 wavguard needs Python 3.11 or newer and has no dependencies outside the standard library.
